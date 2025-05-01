@@ -1,0 +1,367 @@
+#include <beam_charge_asymmetry/Reader.hpp>
+
+namespace beam_charge_asymmetry {
+
+Reader::Reader(Histograms& histograms)
+    : m_histograms(histograms) {}
+
+Reader::~Reader() = default;
+
+auto Reader::operator()(const std::string& run) -> void {
+
+    namespace fs = std::filesystem;
+
+    std::vector<std::string> files = Core::read_recursive_file_in_directory(run);
+
+    fs::path path = run;
+    int run_number = std::stoi(path.parent_path().filename().string());
+    fmt::print("Reading run: {}\n", run_number);
+
+    float fc_plus_total = 0;
+    float fc_minus_total = 0;
+    int n_trigger = 0;
+    TriggerElectron trigger_electron_counter;
+
+    TH1::StatOverflows(kTRUE);
+
+    HistoBins<"bin1"> bin1;
+    HistoBins<"bin2"> bin2;
+    HistoBins<"bin3"> bin3;
+
+
+    
+    for (const auto& file : files) {
+
+        auto dict = hipo::dictionary();
+        auto reader = hipo::reader(file, dict);
+        auto hipo_event = hipo::event();
+
+        auto REC_Event = hipo::bank(dict.getSchema("REC::Event"));
+        auto REC_Particle = hipo::bank(dict.getSchema("REC::Particle"));
+        auto REC_Calorimeter = hipo::bank(dict.getSchema("REC::Calorimeter"));
+        auto HEL_scaler = hipo::bank(dict.getSchema("HEL::scaler"));
+        auto RUN_config = hipo::bank(dict.getSchema("RUN::config"));
+        auto RUN_scaler = hipo::bank(dict.getSchema("RUN::scaler"));
+
+        while (reader.next(hipo_event, REC_Event, HEL_scaler, REC_Particle, REC_Calorimeter, RUN_config, RUN_scaler)) {
+            if (HEL_scaler.getRows() > 0) {
+                for (int row = 0; row < HEL_scaler.getRows(); row++) {
+                    int helicity = HEL_scaler.get<int>("helicity", row);
+                    float fc = HEL_scaler.get<float>("fcupgated", row);
+                    if (helicity == 1) fc_plus_total += fc;
+                    if (helicity == -1) fc_minus_total += fc;
+                }
+            }
+
+
+
+         
+            if (RUN_config.getRows() > 0 && REC_Event.getRows() > 0 && REC_Particle.getRows() > 0 && REC_Calorimeter.getRows() > 0) {
+                
+
+
+
+
+
+
+                
+                std::vector<Core::Particle2> electrons;
+                for (int row = 0; row < REC_Particle.getRows(); row++) {
+                    int pid = REC_Particle.get<int>("pid", row);
+                    int status = REC_Particle.get<int>("status", row);
+                    float chi2pid = REC_Particle.get<float>("chi2pid", row);
+
+                    if (pid == 11 && status < 0 && (std::abs(status / 1000) & 0x2 || std::abs(status / 1000) & 0x4) && std::abs(chi2pid) < 3) {
+                        Core::CalorimeterBank calorimeterBank = Core::read_Calorimeter_bank(REC_Calorimeter, row);
+                        if ((1 <= calorimeterBank.pcal.sector && calorimeterBank.pcal.sector <= 6) ||
+                            (1 <= calorimeterBank.inner.sector && calorimeterBank.inner.sector <= 6) ||
+                            (1 <= calorimeterBank.outer.sector && calorimeterBank.outer.sector <= 6)) {
+                            // fmt::print("sector: {}\n", calorimeterBank.inner.sector);
+                            n_trigger++;  // count how many trigger electrons we looked at
+
+                            float px = REC_Particle.get<float>("px", row);
+                            float py = REC_Particle.get<float>("py", row);
+                            float pz = REC_Particle.get<float>("pz", row);
+                            float vx = REC_Particle.get<float>("vx", row);
+                            float vy = REC_Particle.get<float>("vy", row);
+                            float vz = REC_Particle.get<float>("vz", row);
+                            float vt = REC_Particle.get<float>("vt", row);
+                            float beta = REC_Particle.get<float>("beta", row);
+                            float E = Core::compute_energy(px, py, pz, pid);
+
+                            Core::Particle2 electron(pid, status, row, -1, Core::Constantes::ElectronMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                            if ((1 <= calorimeterBank.pcal.sector && calorimeterBank.pcal.sector <= 6)) electron.sector(calorimeterBank.pcal.sector);
+                            if ((1 <= calorimeterBank.inner.sector && calorimeterBank.inner.sector <= 6)) electron.sector(calorimeterBank.inner.sector);
+                            if ((1 <= calorimeterBank.outer.sector && calorimeterBank.outer.sector <= 6)) electron.sector(calorimeterBank.outer.sector);
+                            electrons.push_back(electron);
+                        }
+                    }
+                }
+
+                if (electrons.empty()) continue;
+                Core::Particle2 electron = electrons[0];
+                for (const auto& e : electrons) {
+                    if (electron.E() < e.E()) {
+                        electron = e;
+                    }
+                }
+
+                switch (electron.sector()) {
+                    case 1:
+                        trigger_electron_counter.sector1++;
+                        break;
+                    case 2:
+                        trigger_electron_counter.sector2++;
+                        break;
+                    case 3:
+                        trigger_electron_counter.sector3++;
+                        break;
+                    case 4:
+                        trigger_electron_counter.sector4++;
+                        break;
+                    case 5:
+                        trigger_electron_counter.sector5++;
+                        break;
+                    case 6:
+                        trigger_electron_counter.sector6++;
+                        break;
+                    default:
+                        fmt::print("Sector not found: {}\n", electron.sector());
+                        break;
+                }
+
+                double beam_energy = 0;
+                // fmt::print("Run: {}\n", run_number);
+                if (run_number >= 18305 && run_number <= 18439) beam_energy = 10.5473;
+                else if (run_number >= 18440 && run_number <= 19131)
+                    beam_energy = 10.5322;
+                else
+                    fmt::print("Run number not found: {}\n", run_number);
+
+                ROOT::Math::PxPyPzEVector beam(0, 0, beam_energy, beam_energy);
+                ROOT::Math::PxPyPzEVector target(0, 0, 0, 0.938);
+                ROOT::Math::PxPyPzEVector q1 = beam - electron.PxPyPzEVector();
+
+                double Q2 = -q1.M2();
+                double W = (target + q1).M();
+                double nu = beam.E() - electron.E();
+                double x = Q2 / (2. * 0.938272 * nu);
+                double y = nu / beam.E();
+
+                bool countEvent = false;
+
+                if (Q2 > 1 && W > 2 && y < 0.8) {
+
+                    std::vector<Core::Particle2> pions_plus;
+                    std::vector<Core::Particle2> pions_minus;
+                    // Get charged pions
+                    for (int row = 0; row < REC_Particle.getRows(); row++) {
+                        int pid = REC_Particle.get<int>("pid", row);
+                        int status = REC_Particle.get<int>("status", row);
+                        float chi2pid = REC_Particle.get<float>("chi2pid", row);
+                        float px = REC_Particle.get<float>("px", row);
+                        float py = REC_Particle.get<float>("py", row);
+                        float pz = REC_Particle.get<float>("pz", row);
+                        float vx = REC_Particle.get<float>("vx", row);
+                        float vy = REC_Particle.get<float>("vy", row);
+                        float vz = REC_Particle.get<float>("vz", row);
+                        float vt = REC_Particle.get<float>("vt", row);
+                        float beta = REC_Particle.get<float>("beta", row);
+                        float E = Core::compute_energy(px, py, pz, pid);
+
+                        if (pid == 211) pions_plus.emplace_back(pid, status, row, 1, Core::Constantes::PionMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                        if (pid == -211) pions_minus.emplace_back(pid, status, row, -1, Core::Constantes::PionMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                    }
+
+                    for (const auto& pion : pions_plus) {
+                        double z = target.Dot(pion.PxPyPzEVector()) / target.Dot(q1);
+                        if (0.3 < z && z < 1) {
+                            double p = pion.p();
+                            double pT = pion.pt();
+                            double theta = std::acos(pion.PxPyPzEVector().Pz()/pion.PxPyPzEVector().R());
+                            // fmt::print("theta: {}\n", theta);
+                            double phih = Core::angle_plane(q1.Vect(), electron.PxPyPzEVector().Vect(), q1.Vect(), pion.PxPyPzEVector().Vect());
+
+                            if (phih > -10000) {
+                                countEvent = true;
+                                int helicity = REC_Event.get<int>("helicity", 0);
+
+                                hist1_pi_plus_p->Fill(p);
+                                hist1_pi_plus_pt->Fill(pT);
+                                hist1_pi_plus_z->Fill(z);
+                                hist1_pi_plus_theta->Fill(theta);
+                                hist1_pi_plus_phi_h->Fill(phih);
+
+                                if (c==0) {
+                                    bin1.hist1_pi_plus_p->Fill(p);
+                                    bin1.hist1_pi_plus_pt->Fill(pT);
+                                    bin1.hist1_pi_plus_z->Fill(z);
+                                    bin1.hist1_pi_plus_theta->Fill(theta);
+                                    bin1.hist1_pi_plus_phi_h->Fill(phih);
+                                }
+                                if (c > 0 && c != n_scaler_bank && c != n_scaler_bank - 1) {
+                                    bin2.hist1_pi_plus_p->Fill(p);
+                                    bin2.hist1_pi_plus_pt->Fill(pT);
+                                    bin2.hist1_pi_plus_z->Fill(z);
+                                    bin2.hist1_pi_plus_theta->Fill(theta);
+                                    bin2.hist1_pi_plus_phi_h->Fill(phih);
+                                }
+                                if (c == n_scaler_bank) {
+                                    bin3.hist1_pi_plus_p->Fill(p);
+                                    bin3.hist1_pi_plus_pt->Fill(pT);
+                                    bin3.hist1_pi_plus_z->Fill(z);
+                                    bin3.hist1_pi_plus_theta->Fill(theta);
+                                    bin3.hist1_pi_plus_phi_h->Fill(phih);
+                                }
+
+                                if (helicity == 1) hist1_pi_plus_sinphi_h_helicty_plus->Fill(std::sin(phih));
+                                if (helicity == -1) hist1_pi_plus_sinphi_h_helicty_minus->Fill(std::sin(phih));
+                            }
+                        }
+                    }
+
+                    for (const auto& pion : pions_minus) {
+                        double z = target.Dot(pion.PxPyPzEVector()) / target.Dot(q1);
+                        if (0.3 < z && z < 1) {
+                            double p = pion.p();
+                            double pT = pion.pt();
+                            double theta = pion.theta() * TMath::Pi() / 180.;
+                            double phih = Core::angle_plane(q1.Vect(), electron.PxPyPzEVector().Vect(), q1.Vect(), pion.PxPyPzVector());
+
+                            if (phih > -10000) {
+                                countEvent = true;
+
+                                int helicity = REC_Event.get<int>("helicity", 0);
+
+                                hist1_pi_minus_p->Fill(p);
+                                hist1_pi_minus_pt->Fill(pT);
+                                hist1_pi_minus_z->Fill(z);
+                                hist1_pi_minus_theta->Fill(theta);
+                                hist1_pi_minus_phi_h->Fill(phih);
+
+                                if (helicity == 1) hist1_pi_minus_sinphi_h_helicty_plus->Fill(std::sin(phih));
+                                if (helicity == -1) hist1_pi_minus_sinphi_h_helicty_minus->Fill(std::sin(phih));
+                            }
+                        }
+                    }
+
+                    if (countEvent) {
+                        hist1_Q2->Fill(Q2);
+                        hist1_W->Fill(W);
+                        hist1_y->Fill(y);
+                        hist1_x->Fill(x);
+                    }
+                }
+            }
+        }
+    }
+
+    m_histograms.graph_beam_charge_asymmetry->Get()->AddPoint(run_number, (fc_plus_total - fc_minus_total) / (fc_plus_total + fc_minus_total));
+    fmt::print("Run: {}, Asymmetry: {}\n", run_number, (fc_plus_total - fc_minus_total) / (fc_plus_total + fc_minus_total));
+
+    auto canvas1 = Core::make_canvas();
+    hist1_pi_plus_sinphi_h_helicty_plus->Draw();
+    Core::save_canvas(canvas1, "../plots/", "helicity_plus_piplus" + std::to_string(run_number));
+
+    auto canvas2 = Core::make_canvas();
+    hist1_pi_plus_sinphi_h_helicty_minus->Draw();
+    Core::save_canvas(canvas2, "../plots/", "helicity_minus_piplus" + std::to_string(run_number));
+
+    // Asymmetry plots
+    auto graph_asym_piplus = std::make_unique<TGraphErrors>();
+    for (int j = 1; j < hist1_pi_plus_sinphi_h_helicty_plus->GetSize() - 1; j++) {
+        double sinphih = hist1_pi_plus_sinphi_h_helicty_plus->GetBinCenter(j);
+        double n_plus = hist1_pi_plus_sinphi_h_helicty_plus->GetBinContent(j);
+        double n_minus = hist1_pi_plus_sinphi_h_helicty_minus->GetBinContent(j);
+
+        double asym = (n_plus - n_minus) / (n_plus + n_minus);
+        double asym_err = 1. / std::sqrt(n_plus + n_minus);
+
+        fmt::print("pi plus | sinphih: {}, asym: {}, err: {}\n", sinphih, asym, asym_err);
+
+        graph_asym_piplus->AddPoint(sinphih, asym);
+        graph_asym_piplus->SetPointError(j - 1, 0., asym_err);
+    }
+
+    auto canvas = Core::make_canvas();
+    graph_asym_piplus->Draw("ape1");
+    graph_asym_piplus->SetLineColor(Color::kBlue);
+    graph_asym_piplus->SetMarkerColor(Color::kBlue);
+    graph_asym_piplus->SetMarkerStyle(kFullCircle);
+    graph_asym_piplus->GetXaxis()->SetTitle("sin(#phi_{h})");
+    graph_asym_piplus->GetYaxis()->SetTitle("Beam Spin Asymmetry");
+    graph_asym_piplus->GetYaxis()->SetRangeUser(-0.06, 0.06);
+
+    auto fitFunctionAsymmetry = new TF1("f", "pol1", -1, 1);
+    graph_asym_piplus->Fit(fitFunctionAsymmetry, "Q");
+
+    Core::save_canvas(canvas, "../plots/", "beam_spin_asymmetry_piplus_" + std::to_string(run_number));
+
+    fmt::println("nTrigger sector1: {}", trigger_electron_counter.sector1);
+    fmt::println("nTrigger sector2: {}", trigger_electron_counter.sector2);
+    fmt::println("nTrigger sector3: {}", trigger_electron_counter.sector3);
+    fmt::println("nTrigger sector4: {}", trigger_electron_counter.sector4);
+    fmt::println("nTrigger sector5: {}", trigger_electron_counter.sector5);
+    fmt::println("nTrigger sector6: {}", trigger_electron_counter.sector6);
+
+    fmt::println("pi plus kinematics p mean: {}", hist1_pi_plus_p->GetMean());
+    fmt::println("pi plus kinematics p mean: {}", hist1_pi_plus_p->GetBinCenter(hist1_pi_plus_p->FindBin(hist1_pi_plus_p->GetMean())));
+    fmt::println("pi plus kinematics pt mean: {}", hist1_pi_plus_pt->GetMean());
+    fmt::println("pi plus kinematics z mean: {}", hist1_pi_plus_z->GetMean());
+    fmt::println("pi plus kinematics theta mean: {}", hist1_pi_plus_theta->GetMean());
+    fmt::println("pi plus kinematics phi_h mean: {}", hist1_pi_plus_phi_h->GetMean());
+
+    {
+        double summ = 0;
+        double count = 0;
+        for (int i = 1; i < hist1_pi_plus_p->GetSize() - 1; i++) {
+            summ += hist1_pi_plus_p->GetBinCenter(i) * hist1_pi_plus_p->GetBinContent(i);
+            count += hist1_pi_plus_p->GetBinContent(i);
+        }
+        double mean_p = summ / count;
+        fmt::println("2| pi plus kinematics p mean: {}", mean_p);
+    }
+
+    fmt::println("Q2 mean: {}", hist1_Q2->GetMean());
+    fmt::println("W mean: {}", hist1_W->GetMean());
+    fmt::println("y mean: {}", hist1_y->GetMean());
+    fmt::println("x mean: {}", hist1_x->GetMean());
+
+    {
+        double summ = 0;
+        double count = 0;
+        for (int i = 1; i < hist1_Q2->GetSize() - 1; i++) {
+            summ += hist1_Q2->GetBinCenter(i) * hist1_Q2->GetBinContent(i);
+            count += hist1_Q2->GetBinContent(i);
+        }
+        double mean_p = summ / count;
+        fmt::println("2| Q2 mean: {}", mean_p);
+    }
+
+    fmt::println("Bin 1");
+    fmt::println("pi plus kinematics p mean: {}", bin1.hist1_pi_plus_p->GetBinCenter(bin1.hist1_pi_plus_p->FindBin(bin1.hist1_pi_plus_p->GetMean())));
+    fmt::println("pi plus kinematics pt mean: {}", bin1.hist1_pi_plus_pt->GetBinCenter(bin1.hist1_pi_plus_pt->FindBin(bin1.hist1_pi_plus_pt->GetMean())));
+    fmt::println("pi plus kinematics z mean: {}", bin1.hist1_pi_plus_z->GetBinCenter(bin1.hist1_pi_plus_z->FindBin(bin1.hist1_pi_plus_z->GetMean())));
+    fmt::println("pi plus kinematics theta mean: {}", bin1.hist1_pi_plus_theta->GetBinCenter(bin1.hist1_pi_plus_theta->FindBin(bin1.hist1_pi_plus_theta->GetMean())));
+    fmt::println("pi plus kinematics phih mean: {}", bin1.hist1_pi_plus_phi_h->GetBinCenter(bin1.hist1_pi_plus_phi_h->FindBin(bin1.hist1_pi_plus_phi_h->GetMean())));
+
+    fmt::println("Bin 2");
+    fmt::println("pi plus kinematics p mean: {}", bin2.hist1_pi_plus_p->GetBinCenter(bin2.hist1_pi_plus_p->FindBin(bin2.hist1_pi_plus_p->GetMean())));
+    fmt::println("pi plus kinematics pt mean: {}", bin2.hist1_pi_plus_pt->GetBinCenter(bin2.hist1_pi_plus_pt->FindBin(bin2.hist1_pi_plus_pt->GetMean())));
+    fmt::println("pi plus kinematics z mean: {}", bin2.hist1_pi_plus_z->GetBinCenter(bin2.hist1_pi_plus_z->FindBin(bin2.hist1_pi_plus_z->GetMean())));
+    fmt::println("pi plus kinematics theta mean: {}", bin2.hist1_pi_plus_theta->GetMean());
+    fmt::println("pi plus kinematics theta mean: {}", bin2.hist1_pi_plus_theta->GetBinCenter(bin2.hist1_pi_plus_theta->FindBin(bin2.hist1_pi_plus_theta->GetMean())));
+    fmt::println("pi plus kinematics phih mean: {}", bin2.hist1_pi_plus_phi_h->GetBinCenter(bin2.hist1_pi_plus_phi_h->FindBin(bin2.hist1_pi_plus_phi_h->GetMean())));
+
+    fmt::println("Bin 3");
+    fmt::println("pi plus kinematics p mean: {}", bin3.hist1_pi_plus_p->GetBinCenter(bin3.hist1_pi_plus_p->FindBin(bin3.hist1_pi_plus_p->GetMean())));
+    fmt::println("pi plus kinematics pt mean: {}", bin3.hist1_pi_plus_pt->GetBinCenter(bin3.hist1_pi_plus_pt->FindBin(bin3.hist1_pi_plus_pt->GetMean())));
+    fmt::println("pi plus kinematics z mean: {}", bin3.hist1_pi_plus_z->GetBinCenter(bin3.hist1_pi_plus_z->FindBin(bin3.hist1_pi_plus_z->GetMean())));
+    fmt::println("pi plus kinematics theta mean: {}", bin3.hist1_pi_plus_theta->GetBinCenter(bin3.hist1_pi_plus_theta->FindBin(bin3.hist1_pi_plus_theta->GetMean())));
+    fmt::println("pi plus kinematics phih mean: {}", bin3.hist1_pi_plus_phi_h->GetBinCenter(bin3.hist1_pi_plus_phi_h->FindBin(bin3.hist1_pi_plus_phi_h->GetMean())));
+    
+
+
+
+}
+}  // namespace beam_charge_asymmetry

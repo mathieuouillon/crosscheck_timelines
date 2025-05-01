@@ -1,0 +1,583 @@
+#include <beam_charge_asymmetry/Reader.hpp>
+
+namespace beam_charge_asymmetry {
+
+Reader::Reader(Histograms& histograms)
+    : m_histograms(histograms) {}
+
+Reader::~Reader() = default;
+
+auto Reader::operator()(const std::string& run) -> void {
+
+    namespace fs = std::filesystem;
+
+    std::vector<std::string> files = Core::read_recursive_file_in_directory(run);
+
+    fs::path path = run;
+    int run_number = std::stoi(path.parent_path().filename().string());
+    fmt::print("Reading run: {}\n", run_number);
+
+    float fc_plus_total = 0;
+    float fc_minus_total = 0;
+    int n_trigger = 0;
+    TriggerElectron trigger_electron_counter;
+
+    TH1::StatOverflows(kTRUE);
+
+    HistoBins bin1(run_number, 1);
+    HistoBins bin2(run_number, 2);
+    HistoBins bin3(run_number, 3);
+    HistoBins bin0(run_number, 0);
+
+    std::unique_ptr<TH1F> hist1_pi_plus_sinphi_h_helicty_plus = std::make_unique<TH1F>((std::string("pi_plus_sinphi_h_helicty_plus") + std::to_string(run_number)).c_str(), "", 8, -1, 1);
+    std::unique_ptr<TH1F> hist1_pi_plus_sinphi_h_helicty_minus = std::make_unique<TH1F>((std::string("pi_plus_sinphi_h_helicty_minus") + std::to_string(run_number)).c_str(), "", 8, -1, 1);
+    std::unique_ptr<TH1F> hist1_pi_minus_sinphi_h_helicty_plus = std::make_unique<TH1F>((std::string("pi_minus_sinphi_h_helicty_plus") + std::to_string(run_number)).c_str(), "", 8, -1, 1);
+    std::unique_ptr<TH1F> hist1_pi_minus_sinphi_h_helicty_minus = std::make_unique<TH1F>((std::string("pi_minus_sinphi_h_helicty_minus") + std::to_string(run_number)).c_str(), "", 8, -1, 1);
+
+    fmt::print("Find tag1 events\n");
+    std::vector<tag1info> tag1events;
+
+    for (const auto& file : files) {
+        auto dict = hipo::dictionary();
+        auto reader = hipo::reader(file, dict, 1);
+        auto event = hipo::event();
+
+        auto REC_Event = hipo::bank(dict.getSchema("REC::Event"));
+        auto REC_Particle = hipo::bank(dict.getSchema("REC::Particle"));
+        auto REC_Calorimeter = hipo::bank(dict.getSchema("REC::Calorimeter"));
+        auto HEL_scaler = hipo::bank(dict.getSchema("HEL::scaler"));
+        auto RUN_config = hipo::bank(dict.getSchema("RUN::config"));
+        auto RUN_scaler = hipo::bank(dict.getSchema("RUN::scaler"));
+
+        while (reader.next(event, REC_Event, HEL_scaler, REC_Particle, REC_Calorimeter, RUN_config, RUN_scaler)) {
+            if (RUN_config.getRows() > 0) {
+                tag1events.emplace_back(RUN_config.get<int>("event", 0), RUN_config.get<int>("timestamp", 0));
+            }
+        }
+    }
+
+    constexpr int MIN_NUM_SCALERS = 2000;
+
+    fmt::print("Number of tag1 events: {}\n", tag1events.size());
+    std::ranges::sort(tag1events, std::less{}, &tag1info::event);
+    std::vector<int> tag1events_number_list = fplus::transform([](const auto& x) -> int { return x.event; }, tag1events);
+
+    auto pair = fplus::fwd::apply(
+        tag1events_number_list,
+        fplus::fwd::split_every(MIN_NUM_SCALERS),
+        fplus::fwd::transform([](const auto& x) { return x.front(); }),
+        fplus::fwd::append_elem(tag1events_number_list.back()),
+        fplus::fwd::unique(),
+        fplus::fwd::transform([](const auto& x) { return std::vector{x, x}; }),
+        fplus::fwd::concat(),
+        fplus::fwd::prepend_elem(0),
+        fplus::fwd::append_elem(std::pow(10., int(std::log10(tag1events_number_list.back())) + 2)),
+        fplus::fwd::adjacent_pairs());
+    fmt::print("pair: {}\n", pair);
+
+    auto time_bin_boundaries = std::vector{pair.at(0)};
+    time_bin_boundaries.push_back({pair.at(0).second, pair.at(pair.size() - 1).first});
+    time_bin_boundaries.push_back(pair.at(pair.size() - 1));
+    fmt::print("a: {}\n", time_bin_boundaries);
+
+    for (const auto& file : files) {
+
+        auto dict = hipo::dictionary();
+        auto reader = hipo::reader(file, dict);
+        auto hipo_event = hipo::event();
+
+        auto REC_Event = hipo::bank(dict.getSchema("REC::Event"));
+        auto REC_Particle = hipo::bank(dict.getSchema("REC::Particle"));
+        auto REC_Calorimeter = hipo::bank(dict.getSchema("REC::Calorimeter"));
+        auto HEL_scaler = hipo::bank(dict.getSchema("HEL::scaler"));
+        auto RUN_config = hipo::bank(dict.getSchema("RUN::config"));
+        auto RUN_scaler = hipo::bank(dict.getSchema("RUN::scaler"));
+
+        while (reader.next(hipo_event, REC_Event, HEL_scaler, REC_Particle, REC_Calorimeter, RUN_config, RUN_scaler)) {
+            if (HEL_scaler.getRows() > 0) {
+                for (int row = 0; row < HEL_scaler.getRows(); row++) {
+                    int helicity = HEL_scaler.get<int>("helicity", row);
+                    float fc = HEL_scaler.get<float>("fcupgated", row);
+                    if (helicity == 1) fc_plus_total += fc;
+                    if (helicity == -1) fc_minus_total += fc;
+                }
+            }
+
+            int event_num;
+            long timestamp;
+            if (RUN_config.getRows() > 0) {
+                event_num = RUN_config.get<int>("event", 0);
+                timestamp = RUN_config.get<long>("timestamp", 0);
+            } else
+                continue;
+
+            if (event_num == 0) continue;
+
+            // if (event_num % 10000 == 0) fmt::print("Event: {}/{}\n", event_num, reader.getEntries());
+
+            if (RUN_config.getRows() > 0 && REC_Event.getRows() > 0 && REC_Particle.getRows() > 0 && REC_Calorimeter.getRows() > 0) {
+                std::vector<Core::Particle2> electrons;
+                for (int row = 0; row < REC_Particle.getRows(); row++) {
+                    int pid = REC_Particle.get<int>("pid", row);
+                    int status = REC_Particle.get<int>("status", row);
+                    float chi2pid = REC_Particle.get<float>("chi2pid", row);
+
+                    if (pid == 11 && status < 0 && (std::abs(status / 1000) & 0x2 || std::abs(status / 1000) & 0x4) && std::abs(chi2pid) < 3) {
+                        Core::CalorimeterBank calorimeterBank = Core::read_Calorimeter_bank(REC_Calorimeter, row);
+                        if ((1 <= calorimeterBank.pcal.sector && calorimeterBank.pcal.sector <= 6) ||
+                            (1 <= calorimeterBank.inner.sector && calorimeterBank.inner.sector <= 6) ||
+                            (1 <= calorimeterBank.outer.sector && calorimeterBank.outer.sector <= 6)) {
+                            // fmt::print("sector: {}\n", calorimeterBank.inner.sector);
+                            n_trigger++;  // count how many trigger electrons we looked at
+
+                            double px = REC_Particle.get<double>("px", row);
+                            double py = REC_Particle.get<double>("py", row);
+                            double pz = REC_Particle.get<double>("pz", row);
+                            double vx = REC_Particle.get<double>("vx", row);
+                            double vy = REC_Particle.get<double>("vy", row);
+                            double vz = REC_Particle.get<double>("vz", row);
+                            double vt = REC_Particle.get<double>("vt", row);
+                            double beta = REC_Particle.get<double>("beta", row);
+                            double E = Core::compute_energy(px, py, pz, pid);
+
+                            Core::Particle2 electron(pid, status, row, -1, Core::Constantes::ElectronMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                            if ((1 <= calorimeterBank.pcal.sector && calorimeterBank.pcal.sector <= 6)) electron.sector(calorimeterBank.pcal.sector);
+                            if ((1 <= calorimeterBank.inner.sector && calorimeterBank.inner.sector <= 6)) electron.sector(calorimeterBank.inner.sector);
+                            if ((1 <= calorimeterBank.outer.sector && calorimeterBank.outer.sector <= 6)) electron.sector(calorimeterBank.outer.sector);
+                            electrons.push_back(electron);
+                        }
+                    }
+                }
+
+                if (electrons.empty()) continue;
+                Core::Particle2 electron = electrons[0];
+                for (const auto& e : electrons) {
+                    if (electron.E() < e.E()) {
+                        electron = e;
+                    }
+                }
+
+                switch (electron.sector()) {
+                    case 1:
+                        trigger_electron_counter.sector1++;
+                        break;
+                    case 2:
+                        trigger_electron_counter.sector2++;
+                        break;
+                    case 3:
+                        trigger_electron_counter.sector3++;
+                        break;
+                    case 4:
+                        trigger_electron_counter.sector4++;
+                        break;
+                    case 5:
+                        trigger_electron_counter.sector5++;
+                        break;
+                    case 6:
+                        trigger_electron_counter.sector6++;
+                        break;
+                    default:
+                        fmt::print("Sector not found: {}\n", electron.sector());
+                        break;
+                }
+
+                double beam_energy = 0;
+                // fmt::print("Run: {}\n", run_number);
+                if (run_number >= 18305 && run_number <= 18439) beam_energy = 10.5473;
+                else if (run_number >= 18440 && run_number <= 19131)
+                    beam_energy = 10.5322;
+                else
+                    fmt::print("Run number not found: {}\n", run_number);
+
+                ROOT::Math::PxPyPzEVector beam(0, 0, beam_energy, beam_energy);
+                ROOT::Math::PxPyPzEVector target(0, 0, 0, 0.938);
+                ROOT::Math::PxPyPzEVector q1 = beam - electron.PxPyPzEVector();
+
+                double Q2 = -q1.M2();
+                double W = (target + q1).M();
+                double nu = beam.E() - electron.E();
+                double x = Q2 / (2. * 0.938272 * nu);
+                double y = nu / beam.E();
+
+                bool countEvent = false;
+
+                if (Q2 > 1 && W > 2 && y < 0.8) {
+
+                    std::vector<Core::Particle2> pions_plus;
+                    std::vector<Core::Particle2> pions_minus;
+                    // Get charged pions
+                    for (int row = 0; row < REC_Particle.getRows(); row++) {
+                        int pid = REC_Particle.get<int>("pid", row);
+                        int status = REC_Particle.get<int>("status", row);
+                        double chi2pid = REC_Particle.get<double>("chi2pid", row);
+                        double px = REC_Particle.get<double>("px", row);
+                        double py = REC_Particle.get<double>("py", row);
+                        double pz = REC_Particle.get<double>("pz", row);
+                        double vx = REC_Particle.get<double>("vx", row);
+                        double vy = REC_Particle.get<double>("vy", row);
+                        double vz = REC_Particle.get<double>("vz", row);
+                        double vt = REC_Particle.get<double>("vt", row);
+                        double beta = REC_Particle.get<double>("beta", row);
+                        double E = Core::compute_energy(px, py, pz, pid);
+
+                        if (pid == 211) pions_plus.emplace_back(pid, status, row, 1, Core::Constantes::PionMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                        if (pid == -211) pions_minus.emplace_back(pid, status, row, -1, Core::Constantes::PionMass, px, py, pz, E, vx, vy, vz, vt, beta, chi2pid);
+                    }
+
+                    for (const auto& pion : pions_plus) {
+                        // fmt::print("Event: {}\n", event_num);
+
+                        // double z = target.Dot(pion.PxPyPzEVector()) / target.Dot(q1);
+
+                        double z = target.E() * pion.E() - target.px() * pion.px() - target.py() * pion.py() - target.pz() * pion.pz();
+                        z /= q1.E() * target.E() - q1.px() * target.px() - q1.py() * target.py() - q1.pz() * target.pz();
+                        if (0.3 < z && z < 1) {
+                            double p = pion.p();
+                            double pT = pion.pt();
+                            double theta = std::acos(pion.PxPyPzEVector().Pz() / pion.PxPyPzEVector().R());
+                            // fmt::print("theta: {}\n", theta);
+                            double phih = Core::angle_plane(q1.Vect(), electron.PxPyPzEVector().Vect(), q1.Vect(), pion.PxPyPzEVector().Vect());
+                            double phih2 = Core::ComputePhiH(q1.Vect(), beam.Vect(), pion.PxPyPzEVector().Vect());
+                            
+                            // fmt::print("evnNum: {}, p: {}, pT: {}, z: {}, theta: {}, phih: {}, Q2: {}, W: {}\n", event_num, p, pT, z, theta, phih, Q2, W);
+                            
+                            // fmt::println("beam: {}, {}, {}, E: {}", beam.px(), beam.py(), beam.pz(), beam.E());
+                            // fmt::println("electron: {}, {}, {}, E: {}", electron.px(), electron.py(), electron.pz(), electron.E());
+                            // fmt::println("q1: {}, {}, {}, E: {}", q1.px(), q1.py(), q1.pz(), q1.E());
+                            // fmt::println("pion: {}, {}, {}, E: {}", pion.px(), pion.py(), pion.pz(), pion.E());
+                            // fmt::println("target: {}, {}, {}, E: {}", target.px(), target.py(), target.pz(), target.E());
+                            
+                            
+                            
+                            // std::cout << "beam: " << beam <<", " << beam.P() << std::endl;
+                            // std::cout << "electron: " << electron.PxPyPzEVector() <<", " << electron.PxPyPzEVector().P()  << std::endl;
+                            // std::cout << "q1: " << q1 <<", " << q1.P()  << std::endl;
+                            // std::cout << "pion: " << pion.PxPyPzEVector() <<", " << pion.PxPyPzEVector().P()  << std::endl;
+                            // std::cout << "target: " << target.px() <<", " << target.py()  <<", " << target.pz() <<", " << target.P()  << std::endl;
+
+                            if (phih > -10000) {
+                                countEvent = true;
+                                int helicity = REC_Event.get<int>("helicity", 0);
+
+                                if (helicity == 1) hist1_pi_plus_sinphi_h_helicty_plus->Fill(std::sin(phih));
+                                if (helicity == -1) hist1_pi_plus_sinphi_h_helicty_minus->Fill(std::sin(phih));
+                                
+
+
+                                if (time_bin_boundaries.at(0).first <= event_num && event_num <= time_bin_boundaries.at(0).second) {
+                                    bin1.hist1_pi_plus_p->Fill(p);
+                                    bin1.hist1_pi_plus_pt->Fill(pT);
+                                    bin1.hist1_pi_plus_z->Fill(z);
+                                    bin1.hist1_pi_plus_theta->Fill(theta);
+                                    bin1.hist1_pi_plus_phih->Fill(phih);
+                                }
+                                if (time_bin_boundaries.at(1).first <= event_num && event_num <= time_bin_boundaries.at(1).second) {
+                                    bin2.hist1_pi_plus_p->Fill(p);
+                                    bin2.hist1_pi_plus_pt->Fill(pT);
+                                    bin2.hist1_pi_plus_z->Fill(z);
+                                    bin2.hist1_pi_plus_theta->Fill(theta);
+                                    bin2.hist1_pi_plus_phih->Fill(phih);
+
+                                    bin0.hist1_pi_plus_p->Fill(p);
+                                    bin0.hist1_pi_plus_pt->Fill(pT);
+                                    bin0.hist1_pi_plus_z->Fill(z);
+                                    bin0.hist1_pi_plus_theta->Fill(theta);
+                                    bin0.hist1_pi_plus_phih->Fill(phih2);
+    
+                                }
+                                if (time_bin_boundaries.at(2).first <= event_num && event_num <= time_bin_boundaries.at(2).second) {
+
+                                    bin3.hist1_pi_plus_p->Fill(p);
+                                    bin3.hist1_pi_plus_pt->Fill(pT);
+                                    bin3.hist1_pi_plus_z->Fill(z);
+                                    bin3.hist1_pi_plus_theta->Fill(theta);
+                                    bin3.hist1_pi_plus_phih->Fill(phih);
+                                }
+                            }
+                        }
+                    }
+
+                    for (const auto& pion : pions_minus) {
+                        // fmt::print("Event: {}\n", event_num);
+
+                        double z = target.Dot(pion.PxPyPzEVector()) / target.Dot(q1);
+                        if (0.3 < z && z < 1) {
+                            double p = pion.p();
+                            double pT = pion.pt();
+                            double theta = std::acos(pion.PxPyPzEVector().Pz() / pion.PxPyPzEVector().R());
+                            // fmt::print("theta: {}\n", theta);
+                            double phih = Core::angle_plane(q1.Vect(), electron.PxPyPzEVector().Vect(), q1.Vect(), pion.PxPyPzEVector().Vect());
+
+                            // fmt::print("evnNum: {}, p: {}, pT: {}, z: {}, theta: {}, phih: {}, Q2: {}, W: {}\n", event_num, p, pT, z, theta, phih, Q2, W);
+                            // std::cout << "beam: " << beam <<", " << beam.P() << std::endl;
+                            // std::cout << "electron: " << electron.PxPyPzEVector() <<", " << electron.PxPyPzEVector().P()  << std::endl;
+                            // std::cout << "q1: " << q1 <<", " << q1.P()  << std::endl;
+                            // std::cout << "pion: " << pion.PxPyPzEVector() <<", " << pion.PxPyPzEVector().P()  << std::endl;
+                            // std::cout << "target: " << target <<", " << target.P()  << std::endl;
+
+                            if (phih > -10000) {
+                                countEvent = true;
+                                int helicity = REC_Event.get<int>("helicity", 0);
+
+                                if (helicity == 1) hist1_pi_minus_sinphi_h_helicty_plus->Fill(std::sin((float)phih));
+                                if (helicity == -1) hist1_pi_minus_sinphi_h_helicty_minus->Fill(std::sin((float)phih));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Asymmetry plots
+    {
+        auto graph_asym_piplus = std::make_unique<TGraphErrors>();
+        for (int j = 1; j < hist1_pi_plus_sinphi_h_helicty_plus->GetSize() - 1; j++) {
+            float sinphih = hist1_pi_plus_sinphi_h_helicty_plus->GetBinCenter(j);
+            float n_plus = hist1_pi_plus_sinphi_h_helicty_plus->GetBinContent(j);
+            float n_minus = hist1_pi_plus_sinphi_h_helicty_minus->GetBinContent(j);
+
+            float asym = (n_plus - n_minus) / (n_plus + n_minus);
+            float asym_err = 1. / std::sqrt(n_plus + n_minus);
+
+            fmt::print("pi plus | sinphih: {}, asym: {}, err: {}\n", sinphih, asym, asym_err);
+
+            graph_asym_piplus->AddPoint(sinphih, asym);
+            graph_asym_piplus->SetPointError(j - 1, 0., asym_err);
+        }
+
+        graph_asym_piplus->Draw("ape1");
+        graph_asym_piplus->SetLineColor(Color::kBlue);
+        graph_asym_piplus->SetMarkerColor(Color::kBlue);
+        graph_asym_piplus->SetMarkerStyle(kFullCircle);
+        graph_asym_piplus->GetXaxis()->SetTitle("sin(#phi_{h})");
+        graph_asym_piplus->GetYaxis()->SetTitle("Beam Spin Asymmetry");
+        graph_asym_piplus->GetYaxis()->SetRangeUser(-0.06, 0.06);
+
+        auto fitFunctionAsymmetry = new TF1("f", "pol1", -1, 1);
+        graph_asym_piplus->Fit(fitFunctionAsymmetry);
+
+        float constant = fitFunctionAsymmetry->GetParameter(0);
+        float slope = fitFunctionAsymmetry->GetParameter(1);
+        float constant_err = fitFunctionAsymmetry->GetParError(0);
+        float slope_err = fitFunctionAsymmetry->GetParError(1);
+        
+        // fmt::print("Constant: {}, Slope: {}\n", constant, slope);
+        m_histograms.graph_beam_spin_asymmetry_slope_piplus->Get()->AddPoint(run_number, slope);
+        m_histograms.graph_beam_spin_asymmetry_slope_piplus->Get()->SetPointError(m_histograms.graph_beam_spin_asymmetry_slope_piplus->Get()->GetN()- 1, 0., slope_err);
+        m_histograms.graph_beam_spin_asymmetry_offset_piplus->Get()->AddPoint(run_number, constant);
+        m_histograms.graph_beam_spin_asymmetry_offset_piplus->Get()->SetPointError(m_histograms.graph_beam_spin_asymmetry_offset_piplus->Get()->GetN()- 1, 0., constant_err);
+
+    }
+
+    {
+        auto graph_asym_piplus = std::make_unique<TGraphErrors>();
+        for (int j = 1; j < hist1_pi_minus_sinphi_h_helicty_plus->GetSize() - 1; j++) {
+            float sinphih = hist1_pi_minus_sinphi_h_helicty_plus->GetBinCenter(j);
+            float n_plus = hist1_pi_minus_sinphi_h_helicty_plus->GetBinContent(j);
+            float n_minus = hist1_pi_minus_sinphi_h_helicty_minus->GetBinContent(j);
+
+            float asym = (n_plus - n_minus) / (n_plus + n_minus);
+            float asym_err = 1. / std::sqrt(n_plus + n_minus);
+
+            fmt::print("pi plus | sinphih: {}, asym: {}, err: {}\n", sinphih, asym, asym_err);
+
+            graph_asym_piplus->AddPoint(sinphih, asym);
+            graph_asym_piplus->SetPointError(j - 1, 0., asym_err);
+        }
+
+        graph_asym_piplus->Draw("ape1");
+        graph_asym_piplus->SetLineColor(Color::kBlue);
+        graph_asym_piplus->SetMarkerColor(Color::kBlue);
+        graph_asym_piplus->SetMarkerStyle(kFullCircle);
+        graph_asym_piplus->GetXaxis()->SetTitle("sin(#phi_{h})");
+        graph_asym_piplus->GetYaxis()->SetTitle("Beam Spin Asymmetry");
+        graph_asym_piplus->GetYaxis()->SetRangeUser(-0.06, 0.06);
+
+        auto fitFunctionAsymmetry = new TF1("f", "pol1", -1, 1);
+        fitFunctionAsymmetry->SetParameters(0, 0);
+        graph_asym_piplus->Fit(fitFunctionAsymmetry);
+
+        float constant = fitFunctionAsymmetry->GetParameter(0);
+        float slope = fitFunctionAsymmetry->GetParameter(1);
+        float constant_err = fitFunctionAsymmetry->GetParError(0);
+        float slope_err = fitFunctionAsymmetry->GetParError(1);
+        
+        // fmt::print("Constant: {}, Slope: {}\n", constant, slope);
+        m_histograms.graph_beam_spin_asymmetry_slope_piminus->Get()->AddPoint(run_number, slope);
+        m_histograms.graph_beam_spin_asymmetry_slope_piminus->Get()->SetPointError(m_histograms.graph_beam_spin_asymmetry_slope_piminus->Get()->GetN()- 1, 0., slope_err);
+        m_histograms.graph_beam_spin_asymmetry_offset_piminus->Get()->AddPoint(run_number, constant);
+        m_histograms.graph_beam_spin_asymmetry_offset_piminus->Get()->SetPointError(m_histograms.graph_beam_spin_asymmetry_offset_piminus->Get()->GetN()- 1, 0., constant_err);
+
+    }
+
+    bin1.hist1_pi_plus_p->ResetStats();
+    bin1.hist1_pi_plus_pt->ResetStats();
+    bin1.hist1_pi_plus_z->ResetStats();
+    bin1.hist1_pi_plus_theta->ResetStats();
+    bin1.hist1_pi_plus_phih->ResetStats();
+
+    bin2.hist1_pi_plus_p->ResetStats();
+    bin2.hist1_pi_plus_pt->ResetStats();
+    bin2.hist1_pi_plus_z->ResetStats();
+    bin2.hist1_pi_plus_theta->ResetStats();
+    bin2.hist1_pi_plus_phih->ResetStats();
+
+    bin3.hist1_pi_plus_p->ResetStats();
+    bin3.hist1_pi_plus_pt->ResetStats();
+    bin3.hist1_pi_plus_z->ResetStats();
+    bin3.hist1_pi_plus_theta->ResetStats();
+    bin3.hist1_pi_plus_phih->ResetStats();
+
+    bin0.hist1_pi_plus_p->ResetStats();
+    bin0.hist1_pi_plus_pt->ResetStats();
+    bin0.hist1_pi_plus_z->ResetStats();
+    bin0.hist1_pi_plus_theta->ResetStats();
+    bin0.hist1_pi_plus_phih->ResetStats();
+
+    Core::draw_hist1D(bin0.hist1_pi_plus_p, "../");
+    Core::draw_hist1D(bin0.hist1_pi_plus_pt, "../");
+
+    double bin1_mean_p = 0;
+    if (bin1.hist1_pi_plus_p->GetEntries() > 0) bin1_mean_p = bin1.hist1_pi_plus_p_binning->GetBinCenter(bin1.hist1_pi_plus_p_binning->FindBin(bin1.hist1_pi_plus_p->GetMean()));
+    double bin1_mean_pt = 0;
+    if (bin1.hist1_pi_plus_pt->GetEntries() > 0) bin1_mean_pt = bin1.hist1_pi_plus_pt_binning->GetBinCenter(bin1.hist1_pi_plus_pt_binning->FindBin(bin1.hist1_pi_plus_pt->GetMean()));
+    double bin1_mean_z = 0;
+    if (bin1.hist1_pi_plus_z->GetEntries() > 0) bin1_mean_z = bin1.hist1_pi_plus_z_binning->GetBinCenter(bin1.hist1_pi_plus_z_binning->FindBin(bin1.hist1_pi_plus_z->GetMean()));
+    double bin1_mean_theta = 0;
+    if (bin1.hist1_pi_plus_theta->GetEntries() > 0) bin1_mean_theta = bin1.hist1_pi_plus_theta_binning->GetBinCenter(bin1.hist1_pi_plus_theta_binning->FindBin(bin1.hist1_pi_plus_theta->GetMean()));
+    double bin1_mean_phih = 0;
+    if (bin1.hist1_pi_plus_phih->GetEntries() > 0) bin1_mean_phih = bin1.hist1_pi_plus_phih_binning->GetBinCenter(bin1.hist1_pi_plus_phih_binning->FindBin(bin1.hist1_pi_plus_phih->GetMean()));
+
+    double bin2_mean_p = 0;
+    if (bin2.hist1_pi_plus_p->GetEntries() > 0) bin2_mean_p = bin2.hist1_pi_plus_p_binning->GetBinCenter(bin2.hist1_pi_plus_p_binning->FindBin(bin2.hist1_pi_plus_p->GetMean()));
+    double bin2_mean_pt = 0;
+    if (bin2.hist1_pi_plus_pt->GetEntries() > 0) bin2_mean_pt = bin2.hist1_pi_plus_pt_binning->GetBinCenter(bin2.hist1_pi_plus_pt_binning->FindBin(bin2.hist1_pi_plus_pt->GetMean()));
+    double bin2_mean_z = 0;
+    if (bin2.hist1_pi_plus_z->GetEntries() > 0) bin2_mean_z = bin2.hist1_pi_plus_z_binning->GetBinCenter(bin2.hist1_pi_plus_z_binning->FindBin(bin2.hist1_pi_plus_z->GetMean()));
+    double bin2_mean_theta = 0;
+    if (bin2.hist1_pi_plus_theta->GetEntries() > 0) bin2_mean_theta = bin2.hist1_pi_plus_theta_binning->GetBinCenter(bin2.hist1_pi_plus_theta_binning->FindBin(bin2.hist1_pi_plus_theta->GetMean()));
+    double bin2_mean_phih = 0;
+    if (bin2.hist1_pi_plus_phih->GetEntries() > 0) bin2_mean_phih = bin2.hist1_pi_plus_phih_binning->GetBinCenter(bin2.hist1_pi_plus_phih_binning->FindBin(bin2.hist1_pi_plus_phih->GetMean()));
+
+    double bin3_mean_p = 0;
+    if (bin3.hist1_pi_plus_p->GetEntries() > 0) bin3_mean_p = bin3.hist1_pi_plus_p_binning->GetBinCenter(bin3.hist1_pi_plus_p_binning->FindBin((float)bin3.hist1_pi_plus_p->GetMean()));
+    double bin3_mean_pt = 0;
+    if (bin3.hist1_pi_plus_pt->GetEntries() > 0) bin3_mean_pt = bin3.hist1_pi_plus_pt_binning->GetBinCenter(bin3.hist1_pi_plus_pt_binning->FindBin(bin3.hist1_pi_plus_pt->GetMean()));
+    double bin3_mean_z = 0;
+    if (bin3.hist1_pi_plus_z->GetEntries() > 0) bin3_mean_z = bin3.hist1_pi_plus_z_binning->GetBinCenter(bin3.hist1_pi_plus_z_binning->FindBin(bin3.hist1_pi_plus_z->GetMean()));
+    double bin3_mean_theta = 0;
+    if (bin3.hist1_pi_plus_theta->GetEntries() > 0) bin3_mean_theta = bin3.hist1_pi_plus_theta_binning->GetBinCenter(bin3.hist1_pi_plus_theta_binning->FindBin(bin3.hist1_pi_plus_theta->GetMean()));
+    double bin3_mean_phih = 0;
+    if (bin3.hist1_pi_plus_phih->GetEntries() > 0) bin3_mean_phih = bin3.hist1_pi_plus_phih_binning->GetBinCenter(bin3.hist1_pi_plus_phih_binning->FindBin(bin3.hist1_pi_plus_phih->GetMean()));
+
+    auto compute_mean = [](auto& bin1, auto& bin2, auto& bin3) {
+        double mean_p = 0;
+        if (bin1 == 0 && bin3 == 0 && bin2 != 0) mean_p = bin2;
+        else if (bin1 == 0 && bin2 != 0 && bin3 != 0)
+            mean_p = (bin2 + bin3) / 2;
+        else if (bin3 == 0 && bin2 != 0 && bin1 != 0)
+            mean_p = (bin2 + bin1) / 2;
+        return mean_p;
+    };
+
+    double mean_p = compute_mean(bin1_mean_p, bin2_mean_p, bin3_mean_p);
+    double mean_pt = compute_mean(bin1_mean_pt, bin2_mean_pt, bin3_mean_pt);
+    double mean_z = compute_mean(bin1_mean_z, bin2_mean_z, bin3_mean_z);
+    double mean_theta = compute_mean(bin1_mean_theta, bin2_mean_theta, bin3_mean_theta);
+    double mean_phih = compute_mean(bin1_mean_phih, bin2_mean_phih, bin3_mean_phih);
+
+    //fmt::println("run {}, mean_p: {}, mean_pt: {}, mean_z: {}, mean_theta: {}, mean_phih: {}", run, bin0.hist1_pi_plus_p->GetMean(), bin0.hist1_pi_plus_pt->GetMean(), bin0.hist1_pi_plus_z->GetMean(), bin0.hist1_pi_plus_theta->GetMean(), bin0.hist1_pi_plus_phih->GetMean());
+
+
+
+    std::shared_ptr<TH1F> hist1_pi_plus_p = std::make_shared<TH1F>((std::string("qp_pi_plus") + std::to_string(run_number) + "_" + std::to_string(11)).c_str(), "", 50, 0, 10);
+    std::shared_ptr<TH1F> hist1_pi_plus_pt = std::make_shared<TH1F>((std::string("qpt_pi_plus") + std::to_string(run_number) + "_" + std::to_string(11)).c_str(), "", 50, 0, 4);
+    std::shared_ptr<TH1F> hist1_pi_plus_z = std::make_shared<TH1F>((std::string("qz_pi_plus") + std::to_string(run_number) + "_" + std::to_string(11)).c_str(), "", 50, 0, 1);
+    std::shared_ptr<TH1F> hist1_pi_plus_theta = std::make_shared<TH1F>((std::string("qtheta_pi_plus") + std::to_string(run_number) + "_" + std::to_string(11)).c_str(), "", 50, 0, 1.570796);
+    std::shared_ptr<TH1F> hist1_pi_plus_phih = std::make_shared<TH1F>((std::string("qphih_pi_plus") + std::to_string(run_number) + "_" + std::to_string(11)).c_str(), "", 50, -3.15, 3.15);
+
+    hist1_pi_plus_p->ResetStats();
+    hist1_pi_plus_pt->ResetStats();
+    hist1_pi_plus_z->ResetStats();
+    hist1_pi_plus_theta->ResetStats();
+    hist1_pi_plus_phih->ResetStats();
+
+    hist1_pi_plus_p->Add(bin1.hist1_pi_plus_p.get());
+    hist1_pi_plus_p->Add(bin2.hist1_pi_plus_p.get());
+    hist1_pi_plus_p->Add(bin3.hist1_pi_plus_p.get());
+
+    hist1_pi_plus_pt->Add(bin1.hist1_pi_plus_pt.get());
+    hist1_pi_plus_pt->Add(bin2.hist1_pi_plus_pt.get());
+    hist1_pi_plus_pt->Add(bin3.hist1_pi_plus_pt.get());
+
+    hist1_pi_plus_z->Add(bin1.hist1_pi_plus_z.get());
+    hist1_pi_plus_z->Add(bin2.hist1_pi_plus_z.get());
+    hist1_pi_plus_z->Add(bin3.hist1_pi_plus_z.get());
+
+    hist1_pi_plus_theta->Add(bin1.hist1_pi_plus_theta.get());
+    hist1_pi_plus_theta->Add(bin2.hist1_pi_plus_theta.get());
+    hist1_pi_plus_theta->Add(bin3.hist1_pi_plus_theta.get());
+
+    hist1_pi_plus_phih->Add(bin1.hist1_pi_plus_phih.get());
+    hist1_pi_plus_phih->Add(bin2.hist1_pi_plus_phih.get());
+    hist1_pi_plus_phih->Add(bin3.hist1_pi_plus_phih.get());
+
+    double mean_p1 = Core::compute_mean(bin0.hist1_pi_plus_p);
+    double mean_pt1 = Core::compute_mean(bin0.hist1_pi_plus_pt);
+    double mean_z1 = Core::compute_mean(bin0.hist1_pi_plus_z);
+    double mean_theta1 = Core::compute_mean(bin0.hist1_pi_plus_theta);
+    double mean_phih1 = Core::compute_mean(bin0.hist1_pi_plus_phih);
+
+    fmt::println("run {}, mean_p: {}, mean_pt: {}, mean_z: {}, mean_theta: {}, mean_phih: {}", run, mean_p1, mean_pt1, mean_z1, mean_theta1, mean_phih1);
+
+
+
+
+    /*
+    fmt::println("mean_p: {}, mean_pt: {}, mean_z: {}, mean_theta: {}, mean_phih: {}", mean_p, mean_pt, mean_z, mean_theta, mean_phih);
+
+    fmt::println("Bin 1");
+    fmt::println("pi plus kinematics p mean: {}", bin1_mean_p);
+    fmt::println("pi plus kinematics pT mean: {}", bin1_mean_pt);
+    fmt::println("pi plus kinematics z mean: {}", bin1_mean_z);
+    fmt::println("pi plus kinematics theta mean: {}", bin1_mean_theta);
+    fmt::println("pi plus kinematics phih mean: {}", bin1_mean_phih);
+
+    fmt::println("Bin 2");
+    fmt::println("pi plus kinematics p mean: {}", bin2_mean_p);
+    fmt::println("pi plus kinematics pT mean: {}", bin2_mean_pt);
+    fmt::println("pi plus kinematics z mean: {}", bin2_mean_z);
+    fmt::println("pi plus kinematics theta mean: {}", bin2_mean_theta);
+    fmt::println("pi plus kinematics phih mean: {}", bin2_mean_phih);
+
+    fmt::println("Bin 3");
+    fmt::println("pi plus kinematics p mean: {}", bin3_mean_p);
+    fmt::println("pi plus kinematics pT mean: {}", bin3_mean_pt);
+    fmt::println("pi plus kinematics z mean: {}", bin3_mean_z);
+    fmt::println("pi plus kinematics theta mean: {}", bin3_mean_theta);
+    fmt::println("pi plus kinematics phih mean: {}", bin3_mean_phih);
+
+    fmt::println("Bin 1");
+    fmt::println("pi plus kinematics p mean: {}, nb entries: {}, exact: {}", bin1.hist1_pi_plus_p_binning->GetBinCenter(bin1.hist1_pi_plus_p_binning->FindBin(bin1.hist1_pi_plus_p->GetMean())), bin1.hist1_pi_plus_p->GetEntries(), bin1.hist1_pi_plus_p->GetMean());
+    fmt::println("pi plus kinematics pT mean: {}, nb entries: {}, exact: {}", bin1.hist1_pi_plus_pt_binning->GetBinCenter(bin1.hist1_pi_plus_pt_binning->FindBin(bin1.hist1_pi_plus_pt->GetMean())), bin1.hist1_pi_plus_pt->GetEntries(), bin1.hist1_pi_plus_pt->GetMean());
+    fmt::println("pi plus kinematics z mean: {}, nb entries: {}, exact: {}", bin1.hist1_pi_plus_z_binning->GetBinCenter(bin1.hist1_pi_plus_z_binning->FindBin(bin1.hist1_pi_plus_z->GetMean())), bin1.hist1_pi_plus_z->GetEntries(), bin1.hist1_pi_plus_z->GetMean());
+    fmt::println("pi plus kinematics theta mean: {}, nb entries: {}, exact: {}", bin1.hist1_pi_plus_theta_binning->GetBinCenter(bin1.hist1_pi_plus_theta_binning->FindBin(bin1.hist1_pi_plus_theta->GetMean())), bin1.hist1_pi_plus_theta->GetEntries(), bin1.hist1_pi_plus_theta->GetMean());
+    fmt::println("pi plus kinematics phih mean: {}, nb entries: {}, exact: {}", bin1.hist1_pi_plus_phih_binning->GetBinCenter(bin1.hist1_pi_plus_phih_binning->FindBin(bin1.hist1_pi_plus_phih->GetMean())), bin1.hist1_pi_plus_phih->GetEntries(), bin1.hist1_pi_plus_phih->GetMean());
+
+    fmt::println("Bin 2");
+    fmt::println("pi plus kinematics p mean: {}, nb entries: {}, exact: {} ", bin2.hist1_pi_plus_p_binning->GetBinCenter(bin2.hist1_pi_plus_p_binning->FindBin(bin2.hist1_pi_plus_p->GetMean())), bin2.hist1_pi_plus_p->GetEntries(), bin2.hist1_pi_plus_p->GetMean());
+    fmt::println("pi plus kinematics pT mean: {}, nb entries: {}, exact: {}", bin2.hist1_pi_plus_pt_binning->GetBinCenter(bin2.hist1_pi_plus_pt_binning->FindBin(bin2.hist1_pi_plus_pt->GetMean())), bin2.hist1_pi_plus_pt->GetEntries(), bin2.hist1_pi_plus_pt->GetMean());
+    fmt::println("pi plus kinematics z mean: {}, nb entries: {}, exact: {}", bin2.hist1_pi_plus_z_binning->GetBinCenter(bin2.hist1_pi_plus_z_binning->FindBin(bin2.hist1_pi_plus_z->GetMean())), bin2.hist1_pi_plus_z->GetEntries(), bin2.hist1_pi_plus_z->GetMean());
+    fmt::println("pi plus kinematics theta mean: {}, nb entries: {}, exact: {}", bin2.hist1_pi_plus_theta_binning->GetBinCenter(bin2.hist1_pi_plus_theta_binning->FindBin(bin2.hist1_pi_plus_theta->GetMean())), bin2.hist1_pi_plus_theta->GetEntries(), bin2.hist1_pi_plus_theta->GetMean());
+    fmt::println("pi plus kinematics phih mean: {}, nb entries: {}, exact: {}", bin2.hist1_pi_plus_phih_binning->GetBinCenter(bin2.hist1_pi_plus_phih_binning->FindBin(bin2.hist1_pi_plus_phih->GetMean())), bin2.hist1_pi_plus_phih->GetEntries(), bin2.hist1_pi_plus_phih->GetMean());
+
+    fmt::println("Bin 3");
+    fmt::println("pi plus kinematics p mean: {}, nb entries: {}, exact: {}", bin3.hist1_pi_plus_p_binning->GetBinCenter(bin3.hist1_pi_plus_p_binning->FindBin((float)bin3.hist1_pi_plus_p->GetMean())), bin3.hist1_pi_plus_p->GetEntries(), bin3.hist1_pi_plus_p->GetMean());
+    fmt::println("pi plus kinematics pT mean: {}, nb entries: {}, exact: {}", bin3.hist1_pi_plus_pt_binning->GetBinCenter(bin3.hist1_pi_plus_pt_binning->FindBin(bin3.hist1_pi_plus_pt->GetMean())), bin3.hist1_pi_plus_pt->GetEntries(), bin3.hist1_pi_plus_pt->GetMean());
+    fmt::println("pi plus kinematics z mean: {}, nb entries: {}, exact: {}", bin3.hist1_pi_plus_z_binning->GetBinCenter(bin3.hist1_pi_plus_z_binning->FindBin(bin3.hist1_pi_plus_z->GetMean())), bin3.hist1_pi_plus_z->GetEntries(), bin3.hist1_pi_plus_z->GetMean());
+    fmt::println("pi plus kinematics theta mean: {}, nb entries: {}, exact: {}", bin3.hist1_pi_plus_theta_binning->GetBinCenter(bin3.hist1_pi_plus_theta_binning->FindBin(bin3.hist1_pi_plus_theta->GetMean())), bin3.hist1_pi_plus_theta->GetEntries(), bin3.hist1_pi_plus_theta->GetMean());
+    fmt::println("pi plus kinematics phih mean: {}, nb entries: {}, exact: {}", bin3.hist1_pi_plus_phih_binning->GetBinCenter(bin3.hist1_pi_plus_phih_binning->FindBin(bin3.hist1_pi_plus_phih->GetMean())), bin3.hist1_pi_plus_phih->GetEntries(), bin3.hist1_pi_plus_phih->GetMean());
+    */
+}
+}  // namespace beam_charge_asymmetry
