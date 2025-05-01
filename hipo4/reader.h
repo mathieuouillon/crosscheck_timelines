@@ -260,7 +260,6 @@ class reader {
 
     explicit reader(const char* file) { open(file); }
 
-    explicit reader(const std::string_view file, hipo::dictionary& dict,const int tag, const short verbose = 0);
     explicit reader(const std::string_view file, hipo::dictionary& dict, const short verbose = 0);
 
     reader(const char* file, const std::vector<int>& tags) {

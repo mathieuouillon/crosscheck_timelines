@@ -3,6 +3,7 @@
 // ROOT includes
 #include <TColor.h>
 
+namespace Plotting {
 struct Color {
     const static inline int16_t kBlue = static_cast<int16_t>(TColor::GetColor("#0C5DA5"));
     const static inline int16_t kRed = static_cast<int16_t>(TColor::GetColor("#FF2C00"));
@@ -23,12 +24,5 @@ struct Color {
     const static inline int16_t kViolet2 = static_cast<int16_t>(TColor::GetColor("#7a49a5"));
     const static inline int16_t kBlue2 = static_cast<int16_t>(TColor::GetColor("#4974a5"));
     const static inline int16_t kGreen2 = static_cast<int16_t>(TColor::GetColor("#3a7512"));
-    
-
-
-    
-
-
- 	
-     	
 };
+}  // namespace Plotting

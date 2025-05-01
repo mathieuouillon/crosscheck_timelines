@@ -73,24 +73,6 @@ reader::reader(const std::string_view file, hipo::dictionary& dict, const short 
 }
 
 /**
-* The constructor for reader, printWarning routine
-* will printout a warning message if the library
-* was not compiled with compression libraries LZ4 or GZIP.
-* @param fileName - input file which will be access.
-* @param dict - reference to dictionary object.
-* @param verbose - verbosity
-*/
-reader::reader(const std::string_view file, hipo::dictionary& dict, const int tag, const short verbose) {
-    printWarning();
-
-    _verbose = verbose;
-    setTags(tag);
-
-    open(file.data());
-    readDictionary(dict);
-}
-
-/**
    * Default destructor. Does nothing
    */
 reader::~reader() {
@@ -348,7 +330,7 @@ void reader::readUserConfig(std::map<std::string, std::string>& mapConfig) {
         event.getStructure(sKey, 32555, 1);
         event.getStructure(sConfig, 32555, 2);
         if (sKey.getSize() > 0) {
-            mapConfig[std::string(sKey.getStringAt(0).c_str())] = std::string(sConfig.getStringAt(0).c_str());
+            mapConfig[std::string(sKey.getStringAt().c_str())] = std::string(sConfig.getStringAt().c_str());
         }
     }
 }
@@ -373,7 +355,7 @@ void reader::readDictionary(hipo::dictionary& dict) {
     for (int i = 0; i < nevents; i++) {
         dictRecord.readHipoEvent(dataevent, i);
         dataevent.getStructure(schemaStructure, 120, 2);
-        dict.parse(schemaStructure.getStringAt(0).c_str());
+        dict.parse(schemaStructure.getStringAt().c_str());
     }
 }
 
