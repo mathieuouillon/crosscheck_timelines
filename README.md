@@ -1,7 +1,5 @@
-# CLAS12-starter
-A minimalistic GitHub repository to start your CLAS12 analysis in C++.
-
-It use the [HIPO](https://github.com/gavalian/hipo) library develop by Gavalian with some modifications.
+# Croos check CLAS12 timelines
+C++ program to cross-check the RG-D timelines.
 
 # Instruction to build it
 ## Dependencies
@@ -19,5 +17,3 @@ meson setup build
 cd build 
 meson compile
 ```
-
-

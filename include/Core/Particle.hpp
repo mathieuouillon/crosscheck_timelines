@@ -31,19 +31,22 @@ class Particle {
     double m_vt;
     double m_beta;
     double m_chi2pid;
+    
+    int m_sector;
 
     // ****** private methods
 
    public:
     // ****** constructors and destructor
     Particle() = delete;
-    Particle(int pdg, int status, int index, int charge, double mass, double px, double py, double pz, double E, double vx, double vy, double vz, double vt, double beta, double chi2pid);
+    Particle(int pdg, int status, int index, int charge, double mass, double px, double py, double pz, double E, double vx, double vy, double vz, double vt, double beta, double chi2pid, int sector);
 
     // ****** public methods
     auto index() const -> int;
     auto charge() const -> int;
     auto pdg() const -> int;
     auto status() const -> int;
+    auto sector() const -> int;
 
     auto PxPyPzEVector() const -> ROOT::Math::PxPyPzEVector;
     auto VxVyVzVtVector() const -> ROOT::Math::XYZTVector;

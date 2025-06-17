@@ -2,8 +2,8 @@
 
 namespace Core {
 
-Particle::Particle(int pdg, int status, int index, int charge, double mass, double px, double py, double pz, double E, double vx, double vy, double vz, double vt, double beta, double chi2pid)
-    : m_pdgcode(pdg), m_status(status), m_index(index), m_charge(charge), m_mass(mass), m_px(px), m_py(py), m_pz(pz), m_E(E), m_vx(vx), m_vy(vy), m_vz(vz), m_vt(vt), m_beta(beta), m_chi2pid(chi2pid) {
+Particle::Particle(int pdg, int status, int index, int charge, double mass, double px, double py, double pz, double E, double vx, double vy, double vz, double vt, double beta, double chi2pid, int sector)
+    : m_pdgcode(pdg), m_status(status), m_index(index), m_charge(charge), m_mass(mass), m_px(px), m_py(py), m_pz(pz), m_E(E), m_vx(vx), m_vy(vy), m_vz(vz), m_vt(vt), m_beta(beta), m_chi2pid(chi2pid), m_sector(sector) {
 }
 
 auto Particle::phi() const -> double {
@@ -67,6 +67,10 @@ auto Particle::pdg() const -> int {
 
 auto Particle::status() const -> int {
     return m_status;
+}
+
+auto Particle::sector() const -> int {
+    return m_sector;
 }
 
 auto Particle::beta() const -> double {

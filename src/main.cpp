@@ -22,46 +22,51 @@
 // Project headers
 #include <Core/Constantes.hpp>
 #include <Core/Helpers.hpp>
-#include <study1/Histograms.hpp>
-#include <study1/Reader.hpp>
-#include <study1/Drawing.hpp>
+#include <electron_normalized_FD_yields/Drawing.hpp>
+#include <electron_normalized_FD_yields/Histograms.hpp>
+#include <electron_normalized_FD_yields/Reader.hpp>
 #include <thread_pool/multi_thread.hpp>
 
-int main(int argc, char* argv[]) {
+int main() {
     ROOT::EnableThreadSafety();  // To stop random errors in multithread mode
 
     auto start_time = std::chrono::high_resolution_clock::now();
 
-    // Read the configuration file
-    const toml::table config = toml::parse_file("../config/study1.toml");
+    const toml::table run_files = toml::parse_file("../run_numbers_with_charge.toml");
 
-    // Read the files
-    std::vector<std::string> files_CuSn = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v10/CuSn");
-    std::vector<std::string> files_CxC = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v10/CxC");
-    std::vector<std::string> files_LD2 = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v10/LD2");
-    std::vector<std::string> files_Short = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v10/ShortEmpRand");
-
-    files_LD2.insert(files_LD2.end(), files_Short.begin(), files_Short.end());
-    std::vector<std::string> files = Core::select_runs(files_LD2, outbending_runs_LD2);
-    files.resize(static_cast<int>(20.f / 100 * files.size()));
-    fmt::print("Number of files: {}\n", files.size());
-    // fmt::println("Files: {}", fmt::join(files, "\n"));
     
-    // Process the data
-    study1::Histograms histograms;
-    study1::Reader reader(histograms, config, {11, 22});
-    multithread_reader(reader, files, 1);
+    // std::vector<std::string> runs_LD2 = Core::read_folders_in_directory("/volatile/clas12/rg-d/production/pass0v11/LD2/mon/recon/");
+    // std::vector<std::string> runs_CxC = Core::read_folders_in_directory("/volatile/clas12/rg-d/production/pass0v11/CxC/mon/recon/");
+    // std::vector<std::string> runs_CuSn = Core::read_folders_in_directory("/volatile/clas12/rg-d/production/pass0v11/CuSn/mon/recon/");
+    // std::vector<std::string> runs_ShortEmpRand = Core::read_folders_in_directory("/volatile/clas12/rg-d/production/pass0v11/ShortEmpRand/mon/recon/");
 
-    // Draw the histograms
-    study1::Drawing drawing(histograms, config);
-    drawing.draw_electron_kinematics();
+    std::vector<std::string> runs_LD2 = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v11/LD2/");
+    std::vector<std::string> runs_CxC = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v11/CxC/");
+    std::vector<std::string> runs_CuSn = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v11/CuSn/");
+    std::vector<std::string> runs_ShortEmpRand = Core::read_recursive_file_in_directory("/cache/hallb/scratch/rg-d/production/skim_pass0v11/ShortEmpRand/");
+
+
+    // Concatenate all runs
+    std::vector<std::string> runs;
+    runs.insert(runs.end(), runs_LD2.begin(), runs_LD2.end());
+    runs.insert(runs.end(), runs_CxC.begin(), runs_CxC.end());
+    runs.insert(runs.end(), runs_CuSn.begin(), runs_CuSn.end());
+    runs.insert(runs.end(), runs_ShortEmpRand.begin(), runs_ShortEmpRand.end());
+
+   // runs.resize(static_cast<int>(1.f / 100 * runs.size()));
+    fmt::print("Number of runs: {}\n", runs.size());    
+
+    electron_normalized_FD_yields::Histograms histograms;
+    electron_normalized_FD_yields::Reader reader(histograms, run_files);
+    multithread_reader(reader, runs, 40);
+
+    electron_normalized_FD_yields::Drawing drawing(histograms);
+    drawing.draw_timelines();
 
     auto end_time = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::seconds>(end_time - start_time);
 
     fmt::println("Time take: {} seconds", duration.count());
-    
 
     return EXIT_SUCCESS;
 }
-

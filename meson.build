@@ -1,5 +1,5 @@
 project(
-  'rgd-pi0',
+  'crosscheck-timelines',
   'cpp',
   version: '0.1',
   default_options: [
@@ -35,8 +35,8 @@ inc = include_directories('include')
 sources = files(
   'src/Core/Particle.cpp',
   'src/main.cpp',
-  'src/study1/Drawing.cpp',
-  'src/study1/Reader.cpp',
+  'src/electron_normalized_FD_yields/Drawing.cpp',
+  'src/electron_normalized_FD_yields/Reader.cpp',
 )
 
 executable(

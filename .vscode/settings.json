@@ -91,7 +91,7 @@
         "pt_pi_plus18535_0.C": "cpp",
         "pt_pi_plus18335_0.C": "cpp"
     },
-    "sonarlint.pathToCompileCommands": "${workspaceFolder}/build/compile_commands.json",
+    "sonarlint.pathToCompileCommands": "${workspaceFolder}/builddir/compile_commands.json",
     "C_Cpp.default.compileCommands": "/work/clas12/ouillon/check_timelines/builddir/compile_commands.json",
     "C_Cpp.default.configurationProvider": "mesonbuild.mesonbuild"
 }
