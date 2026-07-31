@@ -10,7 +10,7 @@
 #include <Plotting/Draw.hpp>
 #include <electron_normalized_FD_yields/Histograms.hpp>
 
-namespace electron_normalized_FD_yields {
+namespace normalized_yields {
 class Drawing {
 
    private:

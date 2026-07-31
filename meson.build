@@ -1,9 +1,9 @@
 project(
   'crosscheck-timelines',
   'cpp',
-  version: '0.1',
+  version: '0.2',
   default_options: [
-    'cpp_std=c++20',
+    'cpp_std=c++23',
     'warning_level=3',
     'buildtype=release',
     'strip=true',

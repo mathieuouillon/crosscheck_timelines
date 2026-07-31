@@ -22,9 +22,10 @@
 #include <Core/Particle.hpp>
 #include <Core/ReadBank.hpp>
 #include <electron_normalized_FD_yields/Histograms.hpp>
+#include "bank.h"
 
 
-namespace electron_normalized_FD_yields {
+namespace normalized_yields {
 
 class Reader {
    private:
@@ -41,6 +42,10 @@ class Reader {
 
     // ****** private methods
     auto check_sector(Core::CalorimeterBank& calorimeterBank) -> bool;
+    auto get_electrons(const hipo::bank& REC_Particle,const hipo::bank&REC_Calorimeter, const double vz_min, const double vz_max) -> std::vector<Core::Particle>;
+    auto get_pi_plus(const hipo::bank& REC_Particle, const hipo::bank& REC_Calorimeter, const double vz_min, const double vz_max) -> std::vector<Core::Particle>;
+    auto get_pi_minus(const hipo::bank& REC_Particle, const hipo::bank& REC_Calorimeter, const double vz_min, const double vz_max) -> std::vector<Core::Particle>;
+    auto get_photons(const hipo::bank& REC_Particle, const hipo::bank& REC_Calorimeter) -> std::vector<Core::Particle>;
 
    public:
     // ****** constructors and destructor

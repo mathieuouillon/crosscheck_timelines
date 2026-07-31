@@ -7,7 +7,7 @@
 using TTO_TGraph = ROOT::TThreadedObject<TGraph>;
 using TTO_TGraphErrors = ROOT::TThreadedObject<TGraphErrors>;
 
-namespace electron_normalized_FD_yields {
+namespace normalized_yields {
 
 struct Histograms {
     std::unique_ptr<TTO_TGraphErrors> graph_normalized_electron_yield_s1 = std::make_unique<TTO_TGraphErrors>();
